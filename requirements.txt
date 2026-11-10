@@ -1,0 +1,4 @@
+ta-lib
+pandas
+numpy
+requests

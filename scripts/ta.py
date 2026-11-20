@@ -39,6 +39,32 @@ PATTERNS = {
     "CDLMORNINGSTAR": talib.CDLMORNINGSTAR,
 }
 
+# Walk-forward floor (borsagator #436, design §1.3): 60 sessions cover
+# MACD(26) + ADX(14) + RSI(14) with margin. A cutoff with less usable
+# history than this is not a scorable cutoff -- the runner fails loudly
+# rather than snapshotting a half-warmed-up series.
+MIN_ROWS = 60
+
+
+def apply_asof(df, as_of, min_rows=MIN_ROWS):
+    """Walk-forward cutoff (borsagator #436): keep only sessions on or
+    before ``as_of`` (YYYY-MM-DD), then fail loudly if fewer than
+    ``min_rows`` sessions remain.
+
+    Truncation happens here, inside the runner after fetch and before
+    any indicator call, so no row dated after the cutoff can reach the
+    indicators. ``as_of`` itself is kept; a cutoff on a non-session
+    date keeps the last session on/before it.
+    """
+    cutoff = pd.Timestamp(as_of)
+    out = df[df.index <= cutoff]
+    if len(out) < min_rows:
+        raise RuntimeError(
+            f"--as-of {as_of}: only {len(out)} sessions on/before the "
+            f"cutoff (< {min_rows} minimum rows); refusing to snapshot"
+        )
+    return out
+
 
 def fetch_ohlc(ticker: str) -> pd.DataFrame:
     period1 = 0
@@ -83,6 +109,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ticker", nargs="?", default="POUL.CA",
                         help="Yahoo ticker (default: POUL.CA)")
+    parser.add_argument("--as-of", default=None,
+                        help="Walk-forward cutoff (YYYY-MM-DD, borsagator "
+                             "#436): drop every session after this date "
+                             "before computing any indicator, so the snapshot "
+                             "sees only data available at the close of that "
+                             "date.")
     args = parser.parse_args()
     ticker = args.ticker
 
@@ -96,6 +128,11 @@ def main() -> int:
     if df.empty:
         print(f"No usable rows for {ticker}", file=sys.stderr)
         return 1
+
+    if args.as_of:
+        df = apply_asof(df, args.as_of)
+        print(f"[as-of] cutoff={args.as_of} rows_on_or_before={len(df)} "
+              f"last_session={df.index[-1].date()}", flush=True)
 
     o = df["open"].to_numpy(dtype=float)
     h = df["high"].to_numpy(dtype=float)
@@ -131,6 +168,7 @@ def main() -> int:
 
     out = {
         "ticker": ticker,
+        "as_of": args.as_of,
         "rows_fetched": int(rows_fetched),
         "rows_used": int(len(df)),
         "date_range": {

@@ -16,9 +16,13 @@ Outputs (under results/):
                        (non-zero) in the last 60 sessions
     indicators.csv   - last 250 rows of OHLC + indicators + patterns
 
-For POUL.CA specifically, all rows before 2019-01-01 are dropped: that
-segment of Yahoo's series is corrupted (stale flat prices on a
-x0.4115 scale).
+For every ticker, all rows before 2019-01-01 are dropped. This is the
+shared input-history policy (borsagator #446 / INS-REVIEW-025): one
+consistent admission history across tickers, so the gate and the
+runners judge the same window. It was motivated by POUL.CA, whose
+pre-2019 segment of Yahoo's series is corrupted (stale flat prices on
+a x0.4115 scale); the floor is not a claim that every ticker shares
+that particular defect.
 """
 import argparse
 import json
@@ -44,6 +48,12 @@ PATTERNS = {
 # history than this is not a scorable cutoff -- the runner fails loudly
 # rather than snapshotting a half-warmed-up series.
 MIN_ROWS = 60
+
+# Shared history floor (borsagator #446 / INS-REVIEW-025): one
+# consistent input-history policy for every ticker (see module
+# docstring); drop the pre-2019 segment for all tickers, not just
+# POUL.CA.
+DROP_BEFORE = "2019-01-01"
 
 
 def apply_asof(df, as_of, min_rows=MIN_ROWS):
@@ -121,9 +131,11 @@ def main() -> int:
     df = fetch_ohlc(ticker)
     rows_fetched = len(df)
 
-    # POUL.CA: drop the corrupted pre-2019 segment.
-    if ticker.upper() == "POUL.CA":
-        df = df[df.index >= "2019-01-01"]
+    # Shared history floor (borsagator #446 / INS-REVIEW-025): drop the
+    # pre-2019 segment for every ticker, not just POUL.CA -- COMI.CA's
+    # older rows otherwise enter the indicator frame.
+    df = df[df.index >= DROP_BEFORE]
+    print(f"[data] after drop-before {DROP_BEFORE}: {len(df)} rows", flush=True)
 
     if df.empty:
         print(f"No usable rows for {ticker}", file=sys.stderr)
@@ -169,6 +181,7 @@ def main() -> int:
     out = {
         "ticker": ticker,
         "as_of": args.as_of,
+        "drop_before": DROP_BEFORE,
         "rows_fetched": int(rows_fetched),
         "rows_used": int(len(df)),
         "date_range": {
